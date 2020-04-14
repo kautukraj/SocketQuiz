@@ -1,94 +1,161 @@
-from socket import *
-import random
-import sys
+import socket
 import time
-# please use functions :(
-serverPort = 1025
-serverSocket = socket(AF_INET, SOCK_STREAM)  # create a new socket using the given address family and socket type
-# SOCK_STREAM = TCP socket and AF_INET = IPv4
-serverSocket.bind(('localhost', serverPort))  # bind the server to given port and hostname
-serverSocket.listen(3)  # can connect to a maximum of three clients
-print("Server is setup")
-QnA = {"Q1": "A1", "Q2": "A2"}  # dictionary of questions(keys) and answers(values)
-connections = []  # list to store the client sockets
-addresses = []  # list to store client addresses
-names = []  # list to store client names (given as user input)
-score = {}  # dictionary to store scores of all participants
-no_of_players = 2  # will change this to 3 later
+import select
+import random
 
-for i in range(0, no_of_players):
-    connectionSocket, address = serverSocket.accept()  # accept client connections
-    name = (connectionSocket.recv(1024)).decode()  # receive client names
-    serverSocket.setblocking(True)  # IDK what this does exactly
-    connections.append(connectionSocket)
-    names.append(name)
-    score[name] = 0  # initialize score of each to 0
-    print("Connected to ", address, name)
+QnA = {"Q" + str(i): i for i in range(1, 101)}  # using dictionary comprehension
+# Q1:1 ; Q2:2 ; Q3:3 ... Q100:100 ; answer to Qn is n
+clients = []  # list to store the connection objects of the clients
+scores = [0, 0, 0]  # maintain the score of each player
 
-while len(QnA) != 0:
-    question = random.choice(list(QnA.keys()))  # choosing a random question
-    answer = QnA[question]  # corresponding answer
-    QnA.pop(question)  # remove that question(and subsequently answer) from the dict to ensure no repetitions
-    print("Your question is: ", question)
 
-    for client in connections:
-        client.send(bytes(question, "utf-8"))  # send question to all the players(clients)
-        client.send(bytes("Buzz by pressing any key", "utf-8"))
+# create a socket to establish connection between client and server
+def create_socket():
+    try:
+        global host
+        global port
+        global server
+        host = ""
+        print("Enter port to host the game.")
+        port = input()
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    who_buzzed = None  # store index of buzzing player
-    buzz = None  # truth value of buzzer, on or off. None = off; anything else = on
-    start_time = time.time()
+    except socket.error as msg:
+        print("Socket creation error: " + str(msg))
 
-    while who_buzzed is None and time.time() - start_time < 10:  # while nobody has buzzed and 10 seconds have not
-        # elapsed
-        for client in connections:
-            try:
-                buzz = client.recv(1024).decode()
-            except:
-                buzz = None
-            if buzz is not None:
-                who_buzzed = client
-                break
 
-    # countdown timer
-    for i in range(10, 0, -1):
-        sys.stdout.write(str(i) + ' ')
-        sys.stdout.flush()
-        time.sleep(1)
+# Binding the socket and listening for connections
+def bind_socket():
+    try:
+        global host
+        global port
+        global server
+        print("Binding the port: " + str(port))
 
-    # do you have an answer?
-    start_time = time.time()
-    attempt = (connections[0].recv(1024)).decode()
-    time_elapsed = time.time() - start_time
-    if time_elapsed > 10 or attempt is None:
-        continue
-    else:
-        print("{} gives answer {}".format(buzzed, attempt))
+        server.bind((host, int(port)))
+        server.listen(5)  # number of connections allowed before refusing new ones
 
-        if attempt == answer:  # ignore case in matching
-            score[buzzed] = score[buzzed] + 1
+    except socket.error as msg:
+        print("Socket binding error occurred: " + str(msg))
+
+
+# Handling connections from multiple players and saving to a list
+def accepting_connections():
+    """for client in clients:
+        client.close()  # closing previous connections when server is restarted
+
+    del clients[:]  # delete all entries in the list"""
+    count = 0
+
+    while True:
+        client, address = server.accept()
+        server.setblocking(True)  # prevents timeout
+        count += 1  # increasing the count of number of connections
+        clients.append(client)  # adding the connection object to the list
+
+        if count < 3:
+            print("Connection established with client {} with address {}".format(count, address[0]))
+            client.send(str.encode(
+                "There are a total of 100 questions.\nPress any alphabet key to buzz.\n+1 if answer is "
+                "correct or a penalty of -0.5 for a wrong one.\nFirst player to reach 5 points wins.\nBest of luck!"))
+            time.sleep(1)  # just for beautification purposes
+            client.send(str.encode("You are player : " + str(count)))
+            time.sleep(1)  # give little pauses to the player
+            client.send(str.encode("Welcome to the quiz!"))
+
+        else:  # all have been connected; triggered the moment player3 connects; thus game starts
+            print("Connection established with client {} with address {}".format(count, address[0]))
+            client.send(str.encode(
+                "There are a total of 100 questions.\nPress any alphabet key to buzz.\n+1 if answer is "
+                "correct or a penalty of -0.5 for a wrong one.\nFirst player to reach 5 points wins.\nBest of luck!"))
+            print("All three players connected. Game starts.")
+            time.sleep(1)
+            client.send(str.encode("You are player : " + str(count)))
+            time.sleep(1)
+            client.send(str.encode("Welcome to the quiz!"))
+
+            quiz()
+            break  # don't accept any more connections
+
+
+def quiz():
+    for i in range(len(QnA)):  # iterate through the dict
+        question = random.choice(list(QnA.keys()))  # choosing a random question
+        answer = QnA[question]  # corresponding answer to the question
+        QnA.pop(question)  # remove that question (and subsequently answer) from the dict to ensure no repetitions
+        for client in clients:
+            time.sleep(0.1)
+            client.send(str.encode("Your question is : " + question + "\n" + "Press any alphanumeric key to buzz."))
+            # send question to each player
+        key_press = select.select(clients, [], [], 10)  # 10 is the timeout
+        # key_press is a tuple of lists
+        # Reading reference: https://pymotw.com/3/select/
+
+        if len(key_press[0]) > 0:  # if somebody has pressed the buzzer
+            who_buzzed = key_press[0][0]  # the player who buzzed the earliest
+            buzz = str(who_buzzed.recv(1024), "utf-8")  # receiving the buzz value
+            key_press = ()
+            for client in clients:
+                if client != who_buzzed:  # send message to other players
+                    client.send(str.encode(
+                        "Sorry, player " + str(clients.index(who_buzzed) + 1) + " has pressed the buzzer."))
+
+            for client in range(len(clients)):
+                if clients[client] == who_buzzed:
+                    who_buzzed_index = client  # t is index of player who buzzed
+
+            if buzz.isalnum():
+                # implement press any key to buzz, okay?
+                who_buzzed.send(str.encode("You have buzzed, please answer."))
+                answer_keypress = select.select(clients, [], [], 10)
+
+                if len(answer_keypress[0]) > 0:
+                    attempt = str(who_buzzed.recv(1024), "utf-8")
+                    if str(attempt) == str(answer):
+                        scores[who_buzzed_index] = scores[who_buzzed_index] + 1
+                        who_buzzed.send(str.encode("Correct answer, You get 1 point"))
+                        if scores[who_buzzed_index] == 5:
+                            for client in clients:
+                                client.send(str.encode("end game"))
+                                time.sleep(1)
+                            break
+                    else:
+                        who_buzzed.send(str.encode("Wrong answer :(, you get a penalty."))
+                        scores[who_buzzed_index] = scores[who_buzzed_index] - 0.5
+                        time.sleep(1)
+                else:
+                    who_buzzed.send(str.encode("Your 10 seconds to answer have elapsed." + "\n" + "You get a penalty "
+                                                                                                  "as you did not "
+                                                                                                  "answer."))
+                    scores[who_buzzed_index] = scores[who_buzzed_index] - 0.5
+
+            '''elif buzz == str(answer):  # answer before buzzing
+                who_buzzed.send(str.encode("You didn't press the buzzer before answering."))
+                time.sleep(1)'''
+
         else:
-            score[buzzed] = score[buzzed] - 0.5
+            for client in clients:
+                client.send(str.encode("Moving on to the next question as nobody buzzed."))
 
-    '''if answerGiven:
-        attempt = (connections[i].recv(1024)).decode()
-        print("{} gives answer {}".format(buzzed, attempt))
 
-        if attempt == answer:  # ignore case in matching
-            score[buzzed] = score[buzzed] + 1
+def main():
+    create_socket()
+    bind_socket()
+    accepting_connections()
+    score_winner = 0  # marks of person who won
+    index_winner = 0  # index of person who won
+
+    for i in range(len(clients)):
+        if scores[i] > score_winner:
+            index_winner = i
+            score_winner = scores[i]
+
+    for client in clients:
+        if clients.index(client) != index_winner:
+            client.send(
+                str.encode("Player " + str(index_winner) + "has won with " + str(score_winner) + " points."))
         else:
-            score[buzzed] = score[buzzed] - 0.5
+            client.send(str.encode("You are the winner with " + str(score_winner) + " points. Congratulations!"))
 
-    for i in range(0, 2):
-        if score[names[i]] > 0.5:
-            print("{} is the winner".format((names[i])))
-            print("Game is closing now...")
-            connections[i].close()
-            serverSocket.close()
-            sys.exit()'''
 
-print("Ran out of questions, game closing.")
-for i in range(0, 1):
-    connections[i].close()
-serverSocket.close()
-sys.exit()
+main()
